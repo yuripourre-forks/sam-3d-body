@@ -218,13 +218,26 @@ class BVHExporter:
         # Special handling for intermediate spine joints
         if joint_name == "Spine1":
             # Spine1 is between Hips and Neck (approximately chest level)
-            neck_idx = get_keypoint_index("neck")
-            if neck_idx is not None:
-                neck_pos = keypoints_3d[neck_idx]
+            neck_pos = self.get_joint_position("Neck", keypoints_3d, hip_center)
+            if neck_pos is not None:
                 # Position Spine1 between hips and neck
                 SPINE1_INTERPOLATION = 0.5
                 return hip_center + SPINE1_INTERPOLATION * (neck_pos - hip_center)
             return hip_center
+
+        # Neck position computed from shoulders to place it closer to the spine (C7)
+        if joint_name == "Neck":
+            # Calculate neck as midpoint of shoulders to avoid it being too forward (throat vs spine)
+            left_shoulder_idx = get_keypoint_index("left-shoulder")
+            right_shoulder_idx = get_keypoint_index("right-shoulder")
+
+            if left_shoulder_idx is not None and right_shoulder_idx is not None:
+                return (keypoints_3d[left_shoulder_idx] + keypoints_3d[right_shoulder_idx]) / 2.0
+
+            # Fallback to raw keypoint
+            neck_idx = get_keypoint_index("neck")
+            if neck_idx is not None:
+                return keypoints_3d[neck_idx]
 
         # Head position computed from eyes and ears for better orientation
         if joint_name == "Head":
