@@ -90,6 +90,11 @@ def inspect_mhr(model_path):
                 coords = skel_state[0, :, :3]
                 print("Joint coords (first 5):")
                 print(coords[:5])
+
+                rest_pose_quats = skel_state[0, :, 3:7]
+                print(f"Rest pose quats shape: {rest_pose_quats.shape}")
+                print("Sample quats (first 5):")
+                print(rest_pose_quats[:5])
                 
     except Exception as e:
         print(f"Inference failed: {e}")
