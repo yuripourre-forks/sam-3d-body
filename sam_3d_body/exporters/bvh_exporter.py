@@ -244,6 +244,120 @@ class BVHExporter:
         print(f"Mapped {mapped_count}/{num_out_joints} joints with rest pose correction.")
         return output_quats
 
+    def _compute_special_head_offsets(self, motion_quats, root_pos):
+        """
+        Compute special offsets for head-related joints based on the first frame.
+
+        This computes:
+        - headfront: base at head joint base, pointing forward
+        - head_end: pointing up based on spine direction
+        """
+        # Use first frame for computing offsets
+        frame_quats = motion_quats[0]  # (J, 4)
+        frame_root = root_pos[0]  # (3,)
+
+        # Compute global positions for first frame
+        global_positions = self._compute_joint_global_positions(frame_quats, frame_root)
+
+        # Find key joint indices
+        head_idx = self.joint_names.index("Head") if "Head" in self.joint_names else -1
+        neck_idx = self.joint_names.index("neck") if "neck" in self.joint_names else -1
+        headfront_idx = self.joint_names.index("headfront") if "headfront" in self.joint_names else -1
+        head_end_idx = self.joint_names.index("head_end") if "head_end" in self.joint_names else -1
+
+        HEAD_LENGTH = 0.2  # Approximate head length in meters
+        FORWARD_OFFSET = 0.05  # How far forward from head base to position headfront (5cm)
+        FORWARD_LENGTH = 0.15  # Length for headfront bone end site
+
+        if head_idx != -1:
+            # Get head and neck positions
+            head_pos = global_positions[head_idx]
+
+            # Get the Head joint's offset (this tells us where the base is relative to parent)
+            head_offset = self.rest_offsets[head_idx]
+            head_offset_length = np.linalg.norm(head_offset)
+
+            # Determine head up vector and base position
+            if neck_idx != -1:
+                neck_pos = global_positions[neck_idx]
+                # Head vector (from neck to head joint position)
+                head_vector = head_pos - neck_pos
+                head_length = np.linalg.norm(head_vector)
+                if head_length > 0:
+                    head_up = head_vector / head_length
+                else:
+                    head_up = np.array([0.0, 1.0, 0.0])
+            else:
+                # No neck, use head offset direction or default up
+                if head_offset_length > 0:
+                    head_up = head_offset / head_offset_length
+                else:
+                    head_up = np.array([0.0, 1.0, 0.0])
+
+            # Compute forward direction based on head and neck orientation
+            forward_dir = self._compute_head_forward_direction(frame_quats, global_positions)
+
+            # Compute up direction based on spine
+            up_dir = self._compute_spine_up_direction(frame_quats, global_positions)
+
+            # For headfront: positioned at the base of the head (where it connects to parent)
+            # with a small forward offset
+            if headfront_idx != -1:
+                # Get head rotation to convert to local frame
+                head_quat = frame_quats[head_idx]
+                r_head = transform.Rotation.from_quat(head_quat)
+                r_head_inv = r_head.inv()
+
+                # The base of the head joint is at offset 0 in the head's local frame
+                # But we want to offset it slightly forward and down
+                # Down: use negative head up direction (toward base)
+                # Forward: use forward direction
+
+                # Position headfront at the base with forward offset
+                base_offset_world = -head_up * (head_offset_length * 0.5) + forward_dir * FORWARD_OFFSET
+
+                # Convert to head's local frame
+                local_offset = r_head_inv.apply(base_offset_world)
+
+                # This is the offset for headfront joint
+                self._computed_headfront_offset = local_offset
+
+                # End site: extend forward from headfront position
+                forward_world = forward_dir * FORWARD_LENGTH
+                local_forward = r_head_inv.apply(forward_world)
+                self._computed_headfront_end_offset = local_forward
+
+            # For head_end: blend the original offset with spine up direction
+            if head_end_idx != -1:
+                # Get original offset
+                original_offset = self.rest_offsets[head_end_idx]
+                original_length = np.linalg.norm(original_offset)
+
+                if original_length == 0:
+                    original_length = HEAD_LENGTH
+
+                # Get head rotation to convert to local frame
+                head_quat = frame_quats[head_idx]
+                r_head = transform.Rotation.from_quat(head_quat)
+                r_head_inv = r_head.inv()
+
+                # Blend head up and spine up (more weight on spine up)
+                SPINE_WEIGHT = 0.7
+                blended_up = (1.0 - SPINE_WEIGHT) * head_up + SPINE_WEIGHT * up_dir
+                blended_up = blended_up / np.linalg.norm(blended_up)
+
+                # Scale to original length
+                new_offset_world = blended_up * original_length
+
+                # Convert to head's local frame
+                new_offset_local = r_head_inv.apply(new_offset_world)
+                self._computed_head_end_offset = new_offset_local
+
+                # End site: continue in same direction
+                end_site_world = blended_up * (original_length * 0.8)
+                end_site_local = r_head_inv.apply(end_site_world)
+                self._computed_head_end_end_offset = end_site_local
+
     def export(self, pred_global_rots, pred_root_pos, output_path, frame_time=0.033333):
         """
         Export motion to BVH.
@@ -282,9 +396,110 @@ class BVHExporter:
         if self.joint_names != self.model_joint_names:
             motion_quats = self._map_rotations(motion_quats)
 
+        # Compute special head offsets based on first frame
+        self._compute_special_head_offsets(motion_quats, pred_root_pos)
+
         with open(output_path, 'w') as f:
             self._write_hierarchy(f)
             self._write_motion(f, motion_quats, pred_root_pos, frame_time)
+
+    def _compute_joint_global_positions(self, global_quats, root_pos):
+        """
+        Compute global positions for all joints given global rotations and root position.
+
+        Args:
+            global_quats: (J, 4) - global quaternions for all joints
+            root_pos: (3,) - root position
+
+        Returns:
+            global_positions: (J, 3) - global positions for all joints
+        """
+        num_joints = len(self.joint_names)
+        global_positions = np.zeros((num_joints, 3))
+
+        for i in range(num_joints):
+            parent_idx = self.joint_parents[i]
+
+            if parent_idx == -1:
+                # Root joint
+                global_positions[i] = root_pos
+            else:
+                # Parent's global position and rotation
+                parent_pos = global_positions[parent_idx]
+                parent_quat = global_quats[parent_idx]
+
+                # Transform offset from parent frame to world frame
+                r_parent = transform.Rotation.from_quat(parent_quat)
+                offset_world = r_parent.apply(self.rest_offsets[i])
+
+                global_positions[i] = parent_pos + offset_world
+
+        return global_positions
+
+    def _compute_head_forward_direction(self, global_quats, global_positions):
+        """
+        Compute the forward direction for the head based on head and neck orientation.
+
+        Returns:
+            forward_dir: (3,) - normalized forward direction vector
+        """
+        # Find head and neck indices
+        head_idx = self.joint_names.index("Head") if "Head" in self.joint_names else -1
+        neck_idx = self.joint_names.index("neck") if "neck" in self.joint_names else -1
+
+        if head_idx == -1:
+            return np.array([0.0, 0.0, -1.0])  # Default forward
+
+        # Get head global rotation
+        head_quat = global_quats[head_idx]
+        r_head = transform.Rotation.from_quat(head_quat)
+
+        if neck_idx != -1:
+            # Blend head and neck rotations for more stable forward direction
+            neck_quat = global_quats[neck_idx]
+            r_neck = transform.Rotation.from_quat(neck_quat)
+
+            # Average the two rotations using SLERP (50/50 blend)
+            from scipy.spatial.transform import Slerp
+            key_times = [0, 1]
+            key_rots = transform.Rotation.from_quat([neck_quat, head_quat])
+            slerp = Slerp(key_times, key_rots)
+            r_avg = slerp(0.5)
+        else:
+            r_avg = r_head
+
+        # Forward is negative Z in the local frame (BVH convention)
+        local_forward = np.array([0.0, 0.0, -1.0])
+        forward_dir = r_avg.apply(local_forward)
+
+        return forward_dir / np.linalg.norm(forward_dir)
+
+    def _compute_spine_up_direction(self, global_quats, global_positions):
+        """
+        Compute the up direction based on the spine orientation.
+
+        Returns:
+            up_dir: (3,) - normalized up direction vector
+        """
+        # Find spine joints
+        spine_joints = []
+        for name in ["Spine", "Spine01", "Spine02"]:
+            if name in self.joint_names:
+                spine_joints.append(self.joint_names.index(name))
+
+        if len(spine_joints) == 0:
+            return np.array([0.0, 1.0, 0.0])  # Default up
+
+        # Use the highest spine joint we can find
+        spine_idx = spine_joints[-1]
+        spine_quat = global_quats[spine_idx]
+        r_spine = transform.Rotation.from_quat(spine_quat)
+
+        # Up is positive Y in the local frame
+        local_up = np.array([0.0, 1.0, 0.0])
+        up_dir = r_spine.apply(local_up)
+
+        return up_dir / np.linalg.norm(up_dir)
 
     def _write_hierarchy(self, f):
         f.write("HIERARCHY\n")
@@ -310,6 +525,18 @@ class BVHExporter:
 
         parent = self.joint_parents[idx]
 
+        # Special handling for head-related joints
+        # These offsets will be computed dynamically based on pose
+        if name == "headfront":
+            # headfront should start at the base of the head and point forward
+            # We'll compute this based on the first frame of the animation
+            if hasattr(self, '_computed_headfront_offset'):
+                offset = self._computed_headfront_offset
+        elif name == "head_end":
+            # head_end should point up based on spine direction
+            if hasattr(self, '_computed_head_end_offset'):
+                offset = self._computed_head_end_offset
+
         if parent == -1:
             f.write(f"{indent}ROOT {name}\n")
         else:
@@ -331,8 +558,15 @@ class BVHExporter:
             f.write(f"{indent}  End Site\n")
             f.write(f"{indent}  {{\n")
 
-            # Use End Site offset from template if available
-            if idx in self.end_site_offsets:
+            # Special handling for headfront end site
+            if name == "headfront" and hasattr(self, '_computed_headfront_end_offset'):
+                end_offset = self._computed_headfront_end_offset
+                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+            elif name == "head_end" and hasattr(self, '_computed_head_end_end_offset'):
+                end_offset = self._computed_head_end_end_offset
+                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+            elif idx in self.end_site_offsets:
+                # Use End Site offset from template if available
                 end_offset = self.end_site_offsets[idx]
                 f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
             else:
