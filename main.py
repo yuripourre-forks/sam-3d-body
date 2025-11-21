@@ -70,9 +70,26 @@ def main(args):
     # Initialize BVH exporter using the loaded MHR model instance
     # Access the underlying MHR model from the SAM3DBody model structure
     # model -> head_pose -> mhr
+    
+    # Resolve rest pose path
+    if args.rest_pose == "mixamo_skeleton":
+        rest_pose_path = os.path.join("assets", "mixamo_skeleton.bvh")
+    elif args.rest_pose == "sam_skeleton":
+        rest_pose_path = os.path.join("assets", "sam_skeleton.bvh")
+    else:
+        rest_pose_path = args.rest_pose
+        
+    if rest_pose_path and not os.path.exists(rest_pose_path):
+        # Check relative to project root if not found
+        if os.path.exists(os.path.join(root, rest_pose_path)):
+             rest_pose_path = os.path.join(root, rest_pose_path)
+        else:
+             print(f"Warning: Rest pose BVH not found at {rest_pose_path}. Using default model skeleton.")
+             rest_pose_path = None
+
     try:
         mhr_instance = model.head_pose.mhr
-        bvh_exporter = BVHExporter(model_instance=mhr_instance)
+        bvh_exporter = BVHExporter(model_instance=mhr_instance, target_skeleton_path=rest_pose_path)
     except AttributeError:
         print("Warning: Could not find loaded MHR model instance. Trying to load from path if available.")
         # Fallback to path if possible (though model.head_pose.mhr should exist)
@@ -82,7 +99,7 @@ def main(args):
                  mhr_file = os.path.join(mhr_path, "mhr_model.pt")
              else:
                  mhr_file = mhr_path
-             bvh_exporter = BVHExporter(model_path=mhr_file)
+             bvh_exporter = BVHExporter(model_path=mhr_file, target_skeleton_path=rest_pose_path)
         else:
              raise RuntimeError("Could not initialize BVH Exporter: MHR model instance not found and mhr_path not provided.")
 
@@ -234,6 +251,12 @@ SAM3D_FOV_PATH: Path to fov estimation model folder
         default=0.8,
         type=float,
         help="Bounding box detection threshold",
+    )
+    parser.add_argument(
+        "--rest_pose",
+        default="mixamo_skeleton",
+        type=str,
+        help="Rest pose skeleton to use (mixamo_skeleton, sam_skeleton, or path to BVH file)",
     )
     parser.add_argument(
         "--use_mask",
