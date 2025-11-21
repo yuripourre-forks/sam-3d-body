@@ -56,6 +56,7 @@ class BVHExporter:
         self.joint_names = []
         self.joint_parents = []
         self.rest_offsets = [] # Offsets in parent frame
+        self.end_site_offsets = {} # Dict mapping joint_idx -> end site offset
 
         self._load_and_extract_skeleton()
 
@@ -134,12 +135,14 @@ class BVHExporter:
     def _load_target_skeleton(self, path):
         print(f"Loading target skeleton from {path}...")
         try:
-            names, parents, offsets = self._read_bvh(path)
+            names, parents, offsets, end_site_offsets = self._read_bvh(path)
             self.joint_names = names
             self.joint_parents = parents
             self.rest_offsets = offsets
+            self.end_site_offsets = end_site_offsets
 
             print(f"Successfully loaded {len(names)} joints from target BVH.")
+            print(f"Found {len(end_site_offsets)} End Site offsets.")
         except Exception as e:
             print(f"Error loading target skeleton: {e}")
             print("Reverting to model skeleton.")
@@ -153,6 +156,7 @@ class BVHExporter:
         joint_names = []
         joint_parents = []
         offsets = []
+        end_site_offsets = {}
 
         parent_stack = [-1]
 
@@ -174,7 +178,12 @@ class BVHExporter:
                 off = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
 
                 if parent_stack[-1] == -2:
-                    pass
+                    # This is an End Site offset
+                    # The parent of the End Site is the joint before it
+                    if len(parent_stack) >= 2:
+                        parent_joint_idx = parent_stack[-2]
+                        if parent_joint_idx >= 0:
+                            end_site_offsets[parent_joint_idx] = off
                 else:
                     idx = parent_stack[-1]
                     if idx >= 0 and idx < len(offsets):
@@ -187,7 +196,7 @@ class BVHExporter:
                 if parent_stack:
                     parent_stack.pop()
 
-        return joint_names, joint_parents, offsets
+        return joint_names, joint_parents, offsets, end_site_offsets
 
     def _map_rotations(self, input_quats):
         """
@@ -318,9 +327,18 @@ class BVHExporter:
             for child in children[idx]:
                 self._write_joint(f, child, children, indent_level + 1)
         else:
+            # Write End Site with correct offset
             f.write(f"{indent}  End Site\n")
             f.write(f"{indent}  {{\n")
-            f.write(f"{indent}    OFFSET 0.000000 0.000000 0.000000\n")
+
+            # Use End Site offset from template if available
+            if idx in self.end_site_offsets:
+                end_offset = self.end_site_offsets[idx]
+                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+            else:
+                # Fallback to zero offset if not found
+                f.write(f"{indent}    OFFSET 0.000000 0.000000 0.000000\n")
+
             f.write(f"{indent}  }}\n")
 
         f.write(f"{indent}}}\n")
