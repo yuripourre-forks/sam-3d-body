@@ -35,7 +35,7 @@ class BVHExporter:
         "r_wrist": "RightHand",
     }
 
-    def __init__(self, model_path=None, model_instance=None, target_skeleton_path=None):
+    def __init__(self, model_path=None, model_instance=None, target_skeleton_path=None, flip_z=False):
         """
         Initialize the BVH exporter.
 
@@ -43,9 +43,11 @@ class BVHExporter:
             model_path: Path to the mhr_model.pt file.
             model_instance: Pre-loaded MHR model instance.
             target_skeleton_path: Optional path to a BVH file defining the target skeleton (rest pose).
+            flip_z: If True, flip the Z-axis to convert handedness (default: False).
         """
         self.model_path = model_path
         self.model = model_instance
+        self.flip_z = flip_z
 
         # Model skeleton (Input structure)
         self.model_joint_names = []
@@ -119,13 +121,18 @@ class BVHExporter:
             self.rest_offsets = []
             for i, p in enumerate(self.model_joint_parents):
                 if p == -1:
-                    offset = rest_pose_pos[i]
+                    offset = rest_pose_pos[i].copy()
                 else:
                     global_offset = rest_pose_pos[i] - rest_pose_pos[p]
                     p_quat = rest_pose_quats[p]
                     r = transform.Rotation.from_quat(p_quat)
                     r_inv = r.inv()
                     offset = r_inv.apply(global_offset)
+
+                # Apply Z-axis flip if requested
+                if self.flip_z:
+                    offset = offset.copy()
+                    offset[2] = -offset[2]
 
                 self.rest_offsets.append(offset)
 
@@ -176,6 +183,11 @@ class BVHExporter:
             elif line.startswith("OFFSET"):
                 parts = line.split()
                 off = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+
+                # Apply Z-axis flip if requested
+                if self.flip_z:
+                    off = off.copy()
+                    off[2] = -off[2]
 
                 if parent_stack[-1] == -2:
                     # This is an End Site offset
@@ -243,6 +255,7 @@ class BVHExporter:
 
         print(f"Mapped {mapped_count}/{num_out_joints} joints with rest pose correction.")
         return output_quats
+
 
     def _compute_special_head_offsets(self, motion_quats, root_pos):
         """
@@ -531,11 +544,16 @@ class BVHExporter:
             # headfront should start at the base of the head and point forward
             # We'll compute this based on the first frame of the animation
             if hasattr(self, '_computed_headfront_offset'):
-                offset = self._computed_headfront_offset
+                offset = self._computed_headfront_offset.copy()
         elif name == "head_end":
             # head_end should point up based on spine direction
             if hasattr(self, '_computed_head_end_offset'):
-                offset = self._computed_head_end_offset
+                offset = self._computed_head_end_offset.copy()
+
+        # Apply Z-axis flip when writing the offset
+        write_offset = offset.copy()
+        if self.flip_z:
+            write_offset[2] = -write_offset[2]
 
         if parent == -1:
             f.write(f"{indent}ROOT {name}\n")
@@ -543,7 +561,7 @@ class BVHExporter:
             f.write(f"{indent}JOINT {name}\n")
 
         f.write(f"{indent}{{\n")
-        f.write(f"{indent}  OFFSET {offset[0]:.6f} {offset[1]:.6f} {offset[2]:.6f}\n")
+        f.write(f"{indent}  OFFSET {write_offset[0]:.6f} {write_offset[1]:.6f} {write_offset[2]:.6f}\n")
 
         if parent == -1:
             f.write(f"{indent}  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n")
@@ -560,19 +578,21 @@ class BVHExporter:
 
             # Special handling for headfront end site
             if name == "headfront" and hasattr(self, '_computed_headfront_end_offset'):
-                end_offset = self._computed_headfront_end_offset
-                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+                end_offset = self._computed_headfront_end_offset.copy()
             elif name == "head_end" and hasattr(self, '_computed_head_end_end_offset'):
-                end_offset = self._computed_head_end_end_offset
-                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+                end_offset = self._computed_head_end_end_offset.copy()
             elif idx in self.end_site_offsets:
                 # Use End Site offset from template if available
-                end_offset = self.end_site_offsets[idx]
-                f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
+                end_offset = self.end_site_offsets[idx].copy()
             else:
                 # Fallback to zero offset if not found
-                f.write(f"{indent}    OFFSET 0.000000 0.000000 0.000000\n")
+                end_offset = np.array([0.0, 0.0, 0.0])
 
+            # Apply Z-axis flip when writing end site offset
+            if self.flip_z:
+                end_offset[2] = -end_offset[2]
+
+            f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
             f.write(f"{indent}  }}\n")
 
         f.write(f"{indent}}}\n")
@@ -587,7 +607,10 @@ class BVHExporter:
             row_data = []
 
             # Root Position
-            pos = root_pos[i]
+            pos = root_pos[i].copy()
+            # Apply Z-axis flip to root position
+            if self.flip_z:
+                pos[2] = -pos[2]
             row_data.extend([pos[0], pos[1], pos[2]])
 
             for j in range(len(self.joint_names)):
@@ -613,6 +636,13 @@ class BVHExporter:
                 # Convert to Euler ZXY
                 r_local = transform.Rotation.from_quat(q_local)
                 euler = r_local.as_euler('ZXY', degrees=True)
+
+                # Apply Z-axis flip to Euler angles
+                # For Z-axis mirroring, negate Z and Y rotations in ZXY order
+                if self.flip_z:
+                    euler[0] = -euler[0]  # Negate Z rotation
+                    euler[2] = -euler[2]  # Negate Y rotation
+                    # X rotation stays the same
 
                 row_data.extend([euler[0], euler[1], euler[2]])
 

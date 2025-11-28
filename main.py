@@ -16,6 +16,7 @@ import numpy as np
 import torch
 from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
 from sam_3d_body.exporters.bvh_exporter import BVHExporter
+from sam_3d_body.exporters.keypoints_exporter import KeypointsExporter
 from tqdm import tqdm
 
 EPSILON = 1e-6
@@ -67,41 +68,47 @@ def main(args):
         fov_estimator=fov_estimator,
     )
 
-    # Initialize BVH exporter using the loaded MHR model instance
-    # Access the underlying MHR model from the SAM3DBody model structure
-    # model -> head_pose -> mhr
-    
-    # Resolve rest pose path
-    if args.rest_pose == "mixamo_skeleton":
-        rest_pose_path = os.path.join("assets", "mixamo_skeleton.bvh")
-    elif args.rest_pose == "sam_skeleton":
-        rest_pose_path = os.path.join("assets", "sam_skeleton.bvh")
-    else:
-        rest_pose_path = args.rest_pose
+    # Initialize BVH exporter if export_bvh is enabled
+    bvh_exporter = None
+    if args.export_bvh:
+        # Initialize BVH exporter using the loaded MHR model instance
+        # Access the underlying MHR model from the SAM3DBody model structure
+        # model -> head_pose -> mhr
         
-    if rest_pose_path and not os.path.exists(rest_pose_path):
-        # Check relative to project root if not found
-        if os.path.exists(os.path.join(root, rest_pose_path)):
-             rest_pose_path = os.path.join(root, rest_pose_path)
+        # Resolve rest pose path
+        if args.rest_pose == "mixamo_skeleton":
+            rest_pose_path = os.path.join("assets", "mixamo_skeleton.bvh")
+        elif args.rest_pose == "sam_skeleton":
+            rest_pose_path = os.path.join("assets", "sam_skeleton.bvh")
         else:
-             print(f"Warning: Rest pose BVH not found at {rest_pose_path}. Using default model skeleton.")
-             rest_pose_path = None
+            rest_pose_path = args.rest_pose
+            
+        if rest_pose_path and not os.path.exists(rest_pose_path):
+            # Check relative to project root if not found
+            if os.path.exists(os.path.join(root, rest_pose_path)):
+                 rest_pose_path = os.path.join(root, rest_pose_path)
+            else:
+                 print(f"Warning: Rest pose BVH not found at {rest_pose_path}. Using default model skeleton.")
+                 rest_pose_path = None
 
-    try:
-        mhr_instance = model.head_pose.mhr
-        bvh_exporter = BVHExporter(model_instance=mhr_instance, target_skeleton_path=rest_pose_path)
-    except AttributeError:
-        print("Warning: Could not find loaded MHR model instance. Trying to load from path if available.")
-        # Fallback to path if possible (though model.head_pose.mhr should exist)
-        # We need to construct the path to mhr_model.pt
-        if mhr_path:
-             if os.path.isdir(mhr_path):
-                 mhr_file = os.path.join(mhr_path, "mhr_model.pt")
-             else:
-                 mhr_file = mhr_path
-             bvh_exporter = BVHExporter(model_path=mhr_file, target_skeleton_path=rest_pose_path)
-        else:
-             raise RuntimeError("Could not initialize BVH Exporter: MHR model instance not found and mhr_path not provided.")
+        try:
+            mhr_instance = model.head_pose.mhr
+            bvh_exporter = BVHExporter(model_instance=mhr_instance, target_skeleton_path=rest_pose_path, flip_z=args.flip_z)
+        except AttributeError:
+            print("Warning: Could not find loaded MHR model instance. Trying to load from path if available.")
+            # Fallback to path if possible (though model.head_pose.mhr should exist)
+            # We need to construct the path to mhr_model.pt
+            if mhr_path:
+                 if os.path.isdir(mhr_path):
+                     mhr_file = os.path.join(mhr_path, "mhr_model.pt")
+                 else:
+                     mhr_file = mhr_path
+                 bvh_exporter = BVHExporter(model_path=mhr_file, target_skeleton_path=rest_pose_path, flip_z=args.flip_z)
+            else:
+                 raise RuntimeError("Could not initialize BVH Exporter: MHR model instance not found and mhr_path not provided.")
+
+    # Initialize keypoints exporter
+    keypoints_exporter = KeypointsExporter()
 
     image_extensions = [
         "*.jpg",
@@ -139,8 +146,17 @@ def main(args):
             # Get joint coordinates to extract root position
             joint_coords = output.get("pred_joint_coords") # (127, 3)
 
+            # Get 3D keypoints
+            keypoints_3d = output.get("pred_keypoints_3d")  # (70, 3)
+
+            # Get additional data for enhanced export
+            keypoints_2d = output.get("pred_keypoints_2d")  # (70, 2)
+            cam_t = output.get("pred_cam_t")  # (3,)
+            focal_length = output.get("focal_length")  # scalar
+            vertices = output.get("pred_vertices")  # (V, 3)
+
             if joint_rotations is None or joint_coords is None:
-                print(f"Missing pose data for {image_path} person {idx}, skipping BVH export.")
+                print(f"Missing pose data for {image_path} person {idx}, skipping export.")
                 continue
 
             # Convert to numpy if needed
@@ -148,6 +164,20 @@ def main(args):
                 joint_rotations = joint_rotations.cpu().numpy()
             if isinstance(joint_coords, torch.Tensor):
                 joint_coords = joint_coords.cpu().numpy()
+            if isinstance(keypoints_3d, torch.Tensor):
+                keypoints_3d = keypoints_3d.cpu().numpy()
+            if keypoints_2d is not None and isinstance(keypoints_2d, torch.Tensor):
+                keypoints_2d = keypoints_2d.cpu().numpy()
+            if cam_t is not None and isinstance(cam_t, torch.Tensor):
+                cam_t = cam_t.cpu().numpy()
+            if focal_length is not None and isinstance(focal_length, torch.Tensor):
+                focal_length = focal_length.cpu().item()
+            elif focal_length is not None and isinstance(focal_length, np.ndarray):
+                focal_length = float(focal_length)
+            if vertices is not None and isinstance(vertices, torch.Tensor):
+                vertices = vertices.cpu().numpy()
+            elif vertices is not None and isinstance(vertices, np.ndarray):
+                vertices = vertices.copy()
 
             # Root position is index 0
             root_pos = joint_coords[0]
@@ -156,17 +186,40 @@ def main(args):
             base_name = os.path.basename(image_path)
             base_name_no_ext = os.path.splitext(base_name)[0]
             if len(outputs) > 1:
+                keypoints_filename = f"{base_name_no_ext}_person{idx}.json"
                 bvh_filename = f"{base_name_no_ext}_person{idx}.bvh"
             else:
+                keypoints_filename = f"{base_name_no_ext}.json"
                 bvh_filename = f"{base_name_no_ext}.bvh"
-            bvh_path = os.path.join(output_folder, bvh_filename)
+            keypoints_path = os.path.join(output_folder, keypoints_filename)
 
-            # Export to BVH
+            # Export to BVH (if enabled)
+            if args.export_bvh and bvh_exporter is not None:
+                bvh_path = os.path.join(output_folder, bvh_filename)
+                try:
+                    bvh_exporter.export(joint_rotations, root_pos, bvh_path)
+                    print(f"Exported BVH to {bvh_path}")
+                except Exception as e:
+                    print(f"Error exporting BVH for {image_path}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Export keypoints to JSON
             try:
-                bvh_exporter.export(joint_rotations, root_pos, bvh_path)
-                print(f"Exported BVH to {bvh_path}")
+                keypoints_exporter.export(
+                    pred_keypoints_3d=keypoints_3d,
+                    pred_joint_coords=joint_coords,
+                    pred_global_rots=joint_rotations,
+                    output_path=keypoints_path,
+                    image_path=image_path,
+                    pred_keypoints_2d=keypoints_2d,
+                    pred_cam_t=cam_t,
+                    focal_length=focal_length,
+                    pred_vertices=vertices,
+                    include_vertices=args.include_vertices,
+                )
             except Exception as e:
-                print(f"Error exporting BVH for {image_path}: {e}")
+                print(f"Error exporting keypoints for {image_path}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -263,6 +316,24 @@ SAM3D_FOV_PATH: Path to fov estimation model folder
         action="store_true",
         default=False,
         help="Use mask-conditioned prediction (segmentation mask is automatically generated from bbox)",
+    )
+    parser.add_argument(
+        "--flip_z",
+        action="store_true",
+        default=False,
+        help="Flip Z-axis to convert coordinate system handedness in BVH export",
+    )
+    parser.add_argument(
+        "--export_bvh",
+        action="store_true",
+        default=False,
+        help="Export BVH files in addition to keypoints JSON (default: False)",
+    )
+    parser.add_argument(
+        "--include_vertices",
+        action="store_true",
+        default=False,
+        help="Include mesh vertices in JSON export (default: False)",
     )
     args = parser.parse_args()
 
