@@ -35,7 +35,7 @@ class BVHExporter:
         "r_wrist": "RightHand",
     }
 
-    def __init__(self, model_path=None, model_instance=None, target_skeleton_path=None, flip_z=False):
+    def __init__(self, model_path=None, model_instance=None, target_skeleton_path=None):
         """
         Initialize the BVH exporter.
 
@@ -43,11 +43,9 @@ class BVHExporter:
             model_path: Path to the mhr_model.pt file.
             model_instance: Pre-loaded MHR model instance.
             target_skeleton_path: Optional path to a BVH file defining the target skeleton (rest pose).
-            flip_z: If True, flip the Z-axis to convert handedness (default: False).
         """
         self.model_path = model_path
         self.model = model_instance
-        self.flip_z = flip_z
 
         # Model skeleton (Input structure)
         self.model_joint_names = []
@@ -129,11 +127,6 @@ class BVHExporter:
                     r_inv = r.inv()
                     offset = r_inv.apply(global_offset)
 
-                # Apply Z-axis flip if requested
-                if self.flip_z:
-                    offset = offset.copy()
-                    offset[2] = -offset[2]
-
                 self.rest_offsets.append(offset)
 
         except Exception as e:
@@ -183,11 +176,6 @@ class BVHExporter:
             elif line.startswith("OFFSET"):
                 parts = line.split()
                 off = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
-
-                # Apply Z-axis flip if requested
-                if self.flip_z:
-                    off = off.copy()
-                    off[2] = -off[2]
 
                 if parent_stack[-1] == -2:
                     # This is an End Site offset
@@ -371,10 +359,25 @@ class BVHExporter:
                 end_site_local = r_head_inv.apply(end_site_world)
                 self._computed_head_end_end_offset = end_site_local
 
-    def export(self, pred_global_rots, pred_root_pos, output_path, frame_time=0.033333):
+    def export(self, pred_global_rots, pred_root_pos, output_path, frame_time=0.033333, left_handed=False):
         """
         Export motion to BVH.
+
+        Args:
+            pred_global_rots: Global rotations for all joints
+            pred_root_pos: Root position
+            output_path: Path to output BVH file
+            frame_time: Time per frame in seconds (default: 0.033333)
+            left_handed: If True, export as left-handed coordinate system (default: False)
         """
+        # Store left_handed flag temporarily for use in write methods
+        self._export_left_handed = left_handed
+
+        # Modify output path to add _lh suffix when left_handed is True
+        if left_handed:
+            base, ext = os.path.splitext(output_path)
+            output_path = f"{base}_lh{ext}"
+
         # Ensure inputs are numpy
         if isinstance(pred_global_rots, torch.Tensor):
             pred_global_rots = pred_global_rots.detach().cpu().numpy()
@@ -415,6 +418,9 @@ class BVHExporter:
         with open(output_path, 'w') as f:
             self._write_hierarchy(f)
             self._write_motion(f, motion_quats, pred_root_pos, frame_time)
+
+        # Clean up temporary flag
+        delattr(self, '_export_left_handed')
 
     def _compute_joint_global_positions(self, global_quats, root_pos):
         """
@@ -552,7 +558,8 @@ class BVHExporter:
 
         # Apply Z-axis flip when writing the offset
         write_offset = offset.copy()
-        if self.flip_z:
+        should_flip_z = getattr(self, '_export_left_handed', False)
+        if should_flip_z:
             write_offset[2] = -write_offset[2]
 
         if parent == -1:
@@ -589,7 +596,8 @@ class BVHExporter:
                 end_offset = np.array([0.0, 0.0, 0.0])
 
             # Apply Z-axis flip when writing end site offset
-            if self.flip_z:
+            should_flip_z = getattr(self, '_export_left_handed', False)
+            if should_flip_z:
                 end_offset[2] = -end_offset[2]
 
             f.write(f"{indent}    OFFSET {end_offset[0]:.6f} {end_offset[1]:.6f} {end_offset[2]:.6f}\n")
@@ -609,7 +617,8 @@ class BVHExporter:
             # Root Position
             pos = root_pos[i].copy()
             # Apply Z-axis flip to root position
-            if self.flip_z:
+            should_flip_z = getattr(self, '_export_left_handed', False)
+            if should_flip_z:
                 pos[2] = -pos[2]
             row_data.extend([pos[0], pos[1], pos[2]])
 
@@ -639,7 +648,8 @@ class BVHExporter:
 
                 # Apply Z-axis flip to Euler angles
                 # For Z-axis mirroring, negate Z and Y rotations in ZXY order
-                if self.flip_z:
+                should_flip_z = getattr(self, '_export_left_handed', False)
+                if should_flip_z:
                     euler[0] = -euler[0]  # Negate Z rotation
                     euler[2] = -euler[2]  # Negate Y rotation
                     # X rotation stays the same

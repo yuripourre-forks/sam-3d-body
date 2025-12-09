@@ -93,7 +93,7 @@ def main(args):
 
         try:
             mhr_instance = model.head_pose.mhr
-            bvh_exporter = BVHExporter(model_instance=mhr_instance, target_skeleton_path=rest_pose_path, flip_z=args.flip_z)
+            bvh_exporter = BVHExporter(model_instance=mhr_instance, target_skeleton_path=rest_pose_path)
         except AttributeError:
             print("Warning: Could not find loaded MHR model instance. Trying to load from path if available.")
             # Fallback to path if possible (though model.head_pose.mhr should exist)
@@ -103,7 +103,7 @@ def main(args):
                      mhr_file = os.path.join(mhr_path, "mhr_model.pt")
                  else:
                      mhr_file = mhr_path
-                 bvh_exporter = BVHExporter(model_path=mhr_file, target_skeleton_path=rest_pose_path, flip_z=args.flip_z)
+                 bvh_exporter = BVHExporter(model_path=mhr_file, target_skeleton_path=rest_pose_path)
             else:
                  raise RuntimeError("Could not initialize BVH Exporter: MHR model instance not found and mhr_path not provided.")
 
@@ -197,7 +197,7 @@ def main(args):
             if args.export_bvh and bvh_exporter is not None:
                 bvh_path = os.path.join(output_folder, bvh_filename)
                 try:
-                    bvh_exporter.export(joint_rotations, root_pos, bvh_path)
+                    bvh_exporter.export(joint_rotations, root_pos, bvh_path, left_handed=args.left_handed)
                     print(f"Exported BVH to {bvh_path}")
                 except Exception as e:
                     print(f"Error exporting BVH for {image_path}: {e}")
@@ -318,10 +318,10 @@ SAM3D_FOV_PATH: Path to fov estimation model folder
         help="Use mask-conditioned prediction (segmentation mask is automatically generated from bbox)",
     )
     parser.add_argument(
-        "--flip_z",
+        "--left_handed",
         action="store_true",
         default=False,
-        help="Flip Z-axis to convert coordinate system handedness in BVH export",
+        help="Export BVH file as left-handed coordinate system (default: False, exports as right-handed)",
     )
     parser.add_argument(
         "--export_bvh",
