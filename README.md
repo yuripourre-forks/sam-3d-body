@@ -5,6 +5,7 @@ SAM 3D Body is one part of SAM 3D, a pair of models for object and human mesh re
 # SAM 3D Body: Robust Full-Body Human Mesh Recovery
 
 <p align="left">
+<a href="https://arxiv.org/abs/2602.15989"><img src="https://img.shields.io/badge/arXiv-2602.15989-b31b1b.svg" alt="arXiv"></a>
 <a href="https://ai.meta.com/research/publications/sam-3d-body-robust-full-body-human-mesh-recovery/"><img src='https://img.shields.io/badge/Meta_AI-Paper-4A90E2?logo=meta&logoColor=white' alt='Paper'></a>
 <a href="https://ai.meta.com/blog/sam-3d/"><img src='https://img.shields.io/badge/Project_Page-Blog-9B72F0?logo=googledocs&logoColor=white' alt='Blog'></a>
 <a href="https://huggingface.co/datasets/facebook/sam-3d-body-dataset"><img src='https://img.shields.io/badge/🤗_Hugging_Face-Dataset-F59500?logoColor=white' alt='Dataset'></a>
@@ -78,38 +79,48 @@ See [INSTALL.md](INSTALL.md) for instructions for python environment setup and m
 
 ## Getting Started
 
-3DB can reconstruct 3D full-body human mesh from a single image, optionally with keypoint/mask prompts and/or hand refinement from the hand decoder. 
+3DB can reconstruct 3D full-body human mesh from a single image, optionally with keypoint/mask prompts and/or hand refinement from the hand decoder.
 
-For a quick start, try the following lines of code with models loaded directly from [Hugging Face](https://huggingface.co/facebook) (please make sure to follow [INSTALL.md](INSTALL.md) to request access to our checkpoints.).
+For a quick start, run our demo script for model inference and visualization with models from [Hugging Face](https://huggingface.co/facebook) (please make sure to follow [INSTALL.md](INSTALL.md) to request access to our checkpoints.).
 
-
-```python
-from sam_3d_body import load_sam_3d_body_hf, SAM3DBodyEstimator
-
-# Load model from HuggingFace
-model, model_cfg = load_sam_3d_body_hf("facebook/sam-3d-body-dinov3")
-
-# Create estimator
-estimator = SAM3DBodyEstimator(
-    sam_3d_body_model=model,
-    model_cfg=model_cfg,
-)
-
-# 3D human mesh recovery
-outputs = estimator.process_one_image("path/to/image.jpg")
-```
-
-You can also run our demo script for model inference and visualization:
 ```bash
 # Download assets from HuggingFace
 hf download facebook/sam-3d-body-dinov3 --local-dir checkpoints/sam-3d-body-dinov3
 
-# Run demo script
+# Run demo script with default ViTdet detector and MoGe2 FOV model
 python demo.py \
     --image_folder <path_to_images> \
     --output_folder <path_to_output> \
     --checkpoint_path ./checkpoints/sam-3d-body-dinov3/model.ckpt \
     --mhr_path ./checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt
+
+# To use SAM3 as the detector to align with online playground of SAM3D
+python demo.py \
+    --image_folder <path_to_images> \
+    --output_folder <path_to_output> \
+    --checkpoint_path ./checkpoints/sam-3d-body-dinov3/model.ckpt \
+    --mhr_path ./checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt \
+    --detector_name sam3
+```
+
+You can also try the following lines of code with models loaded directly from [Hugging Face](https://huggingface.co/facebook)
+
+```python
+import cv2
+import numpy as np
+from notebook.utils import setup_sam_3d_body
+from tools.vis_utils import visualize_sample_together
+
+# Set up the estimator
+estimator = setup_sam_3d_body(hf_repo_id="facebook/sam-3d-body-dinov3")
+
+# Load and process image
+img_bgr = cv2.imread("path/to/image.jpg")
+outputs = estimator.process_one_image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+
+# Visualize and save results
+rend_img = visualize_sample_together(img_bgr, outputs, estimator.faces)
+cv2.imwrite("output.jpg", rend_img.astype(np.uint8))
 ```
 
 For a complete demo with visualization, see [notebook/demo_human.ipynb](notebook/demo_human.ipynb).
@@ -121,7 +132,7 @@ For a complete demo with visualization, see [notebook/demo_human.ipynb](notebook
 
 The table below shows the performance of SAM 3D Body checkpoints released on 11/19/2025.
 
-|      **Backbone (size)**       | **3DPW (MPJPE)** |    **EMDB (MPJPE)**     | **RICH (PVE)** | **COCO (PCK@.05)** |  **LSPET (PCK@.05)** | **Freihand (PA-MPJPE)** 
+|      **Backbone (size)**       | **3DPW (MPJPE)** |    **EMDB (MPJPE)**     | **RICH (PVE)** | **COCO (PCK@.05)** |  **LSPET (PCK@.05)** | **Freihand (PA-MPJPE)**
 | :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :----------------: | :----------------: |
 |  DINOv3-H+ (840M) <br /> ([config](https://huggingface.co/facebook/sam-3d-body-dinov3/blob/main/model_config.yaml), [checkpoint](https://huggingface.co/facebook/sam-3d-body-dinov3/blob/main/model.ckpt))   |      54.8      |          61.7         |       60.3        |       86.5        | 68.0 | 5.5
 |   ViT-H  (631M) <br /> ([config](https://huggingface.co/facebook/sam-3d-body-vith/blob/main/model_config.yaml), [checkpoint](https://huggingface.co/facebook/sam-3d-body-vith/blob/main/model.ckpt))    |     54.8   |         62.9         |       61.7        |        86.8       | 68.9 |  5.5
@@ -147,17 +158,17 @@ See [contributing](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md
 ## Contributors
 
 The SAM 3D Body project was made possible with the help of many contributors:
-Vivian Lee, George Orlin, Nikhila Ravi, Andrew Westbury, Jyun-Ting Song, Zejia Weng, Xizi Zhang, Yuting Ye, Federica Bogo, Ronald Mallet, Ahmed Osman, Rawal Khirodkar, Javier Romero, Carsten Stoll, Juan Carlos Guzman, Sofien Bouaziz, Yuan Dong, Su Zhaoen, Fabian Prada, Alexander Richard, Michael Zollhoefer, Roman Rädle, Sasha Mitts, Michelle Chan, Yael Yungster, Azita Shokrpour, Helen Klein, Mallika Malhotra, Ida Cheng, Eva Galper.
+Vivian Lee, George Orlin, Nikhila Ravi, Andrew Westbury, Jyun-Ting Song, Zejia Weng, Xizi Zhang, Yuting Ye, Federica Bogo, Ronald Mallet, Ahmed Osman, Rawal Khirodkar, Javier Romero, Carsten Stoll, Jean-Charles Bazin, Sofien Bouaziz, Yuan Dong, Su Zhaoen, Fabian Prada, Alexander Richard, Michael Zollhoefer, Roman Rädle, Sasha Mitts, Michelle Chan, Yael Yungster, Azita Shokrpour, Helen Klein, Mallika Malhotra, Ida Cheng, Eva Galper.
 
 ## Citing SAM 3D Body
 
 If you use SAM 3D Body or the SAM 3D Body dataset in your research, please use the following BibTeX entry.
 
 ```bibtex
-@article{yang2025sam3dbody,
+@article{yang2026sam3dbody,
   title={SAM 3D Body: Robust Full-Body Human Mesh Recovery},
   author={Yang, Xitong and Kukreja, Devansh and Pinkus, Don and Sagar, Anushka and Fan, Taosha and Park, Jinhyung and Shin, Soyong and Cao, Jinkun and Liu, Jiawei and Ugrinovic, Nicolas and Feiszli, Matt and Malik, Jitendra and Dollar, Piotr and Kitani, Kris},
-  journal={arXiv preprint; identifier to be added},
-  year={2025}
+  journal={arXiv preprint arXiv:2602.15989},
+  year={2026}
 }
 ```
