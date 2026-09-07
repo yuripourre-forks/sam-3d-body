@@ -73,11 +73,14 @@ for row in "${CHAR_ROWS[@]}"; do
     fi
 
     echo "=== ${name}: ${frame_count} frames, rect=${rect}, loop=${is_loop} ==="
+    # No townsfolk sprite articulates its legs -- only the upper body is
+    # animated -- so leg motion SAM3D reports is depth ambiguity, not movement.
     python scripts/basic_pipeline.py \
         --image "$INPUT" \
         --rect "$rect" \
         --frames "$frame_count" \
         --output "$output_dir" \
+        --static-legs \
         "${loop_flag[@]}" \
         "${EXTRA_ARGS[@]}"
     echo

@@ -61,6 +61,20 @@ UINT8_MAX = 255.0
 MASK_FOREGROUND_VALUE = 255
 EXPR_PARAM_DIM = 72
 
+# Roots of the two leg chains in the MHR skeleton; everything below them
+# (lowleg, foot, ball, subtalar, talocrural, transversetarsal, twist joints)
+# is collected by walking the joint-parent tree.
+LEG_ROOT_JOINT_NAMES = ("l_upleg", "r_upleg")
+# MHRHead.mhr_forward packs pose parameters as
+# [global_trans (3), global_rot (3), body_pose_params[:130]].
+BODY_PARAM_OFFSET = 6
+BODY_PARAM_COUNT = 130
+# The MHR parameter transform maps model parameters to per-joint DOFs
+# (translation, rotation, scale), laid out num_joints * JOINT_DOF_COUNT rows.
+JOINT_DOF_COUNT = 7
+PARAM_TRANSFORM_KEY = "parameter_transform.parameter_transform"
+PARAM_WEIGHT_EPSILON = 1e-8
+
 
 def numpy_to_jsonable(value):
     if isinstance(value, np.ndarray):
@@ -324,6 +338,74 @@ def lock_sequence_identity(frames: list[dict]) -> tuple[np.ndarray, np.ndarray, 
     return shape_locked, scale_locked, hand_locked
 
 
+def leg_joint_indices(joint_names: list[str], joint_parents: list[int]) -> set[int]:
+    """The upper-leg roots plus every joint descending from them."""
+    leg_indices = {joint_names.index(name) for name in LEG_ROOT_JOINT_NAMES}
+    grew = True
+    while grew:
+        grew = False
+        for joint_idx, parent_idx in enumerate(joint_parents):
+            if parent_idx in leg_indices and joint_idx not in leg_indices:
+                leg_indices.add(joint_idx)
+                grew = True
+    return leg_indices
+
+
+def leg_body_param_indices(head_pose) -> np.ndarray:
+    """body_pose_params indices that drive the leg chains and nothing else.
+
+    A parameter transform column drives a joint when it carries weight on any
+    of that joint's DOF rows. Every column touching the legs happens to be
+    exclusive to them, so freezing those parameters cannot disturb the torso,
+    arms, or head; the check below keeps that guarantee honest if the model
+    ever changes.
+    """
+    skeleton = head_pose.mhr.character_torch.skeleton
+    leg_indices = leg_joint_indices(list(skeleton.joint_names), skeleton.joint_parents.tolist())
+
+    param_transform = (
+        head_pose.mhr.character_torch.state_dict()[PARAM_TRANSFORM_KEY].cpu().numpy()
+    )
+    is_leg_row = np.zeros(param_transform.shape[0], dtype=bool)
+    for joint_idx in leg_indices:
+        is_leg_row[joint_idx * JOINT_DOF_COUNT : (joint_idx + 1) * JOINT_DOF_COUNT] = True
+
+    drives_joint = np.abs(param_transform) > PARAM_WEIGHT_EPSILON
+    drives_leg = drives_joint[is_leg_row].any(axis=0)
+    drives_other = drives_joint[~is_leg_row].any(axis=0)
+    shared = np.flatnonzero(drives_leg & drives_other)
+    if shared.size:
+        raise RuntimeError(
+            f"MHR parameters {shared.tolist()} drive both leg and non-leg joints; "
+            "freezing them would also alter the upper body"
+        )
+
+    leg_columns = np.flatnonzero(drives_leg)
+    in_body_range = (leg_columns >= BODY_PARAM_OFFSET) & (
+        leg_columns < BODY_PARAM_OFFSET + BODY_PARAM_COUNT
+    )
+    return leg_columns[in_body_range] - BODY_PARAM_OFFSET
+
+
+def freeze_leg_params(frames: list[dict], head_pose) -> None:
+    """Pin leg pose parameters to their per-character median.
+
+    For sprite art whose legs are drawn static, any per-frame leg articulation
+    SAM3D reports is monocular depth ambiguity rather than observed motion.
+    global_rot is left alone, so the legs still follow the body as it leans --
+    they just stop articulating. The remaining leg parameters are scales, which
+    lock_sequence_identity already pins to a per-character median.
+    """
+    leg_indices = leg_body_param_indices(head_pose)
+    body_params = np.array(
+        [frame["body_pose_params"] for frame in frames], dtype=np.float32
+    )
+    body_params[:, leg_indices] = np.median(body_params[:, leg_indices], axis=0)
+    for frame, params in zip(frames, body_params):
+        frame["body_pose_params"] = params.tolist()
+    print(f"  froze {len(leg_indices)} leg pose parameter(s) to the per-character median")
+
+
 def repair_camera_params(
     frames: list[dict], outlier_indices: set[int], is_loop: bool
 ) -> None:
@@ -361,6 +443,7 @@ def stabilize_sequence(
     head_pose,
     device: str,
     is_loop: bool,
+    static_legs: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Lock identity, repair outliers, smooth, and re-pose every frame."""
     shape_locked, scale_locked, _ = lock_sequence_identity(frames)
@@ -382,6 +465,9 @@ def stabilize_sequence(
             repair_outliers(frames, outlier_indices, is_loop)
             repair_camera_params(frames, outlier_indices, is_loop)
         smooth_character(frames, is_loop)
+
+    if static_legs:
+        freeze_leg_params(frames, head_pose)
 
     zero_expr = np.zeros(EXPR_PARAM_DIM, dtype=np.float32)
     for frame in frames:
@@ -620,6 +706,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Skip identity locking and temporal smoothing",
     )
     parser.add_argument(
+        "--static-legs",
+        action="store_true",
+        help=(
+            "Pin leg pose parameters to their per-character median, for sprites "
+            "whose legs are drawn static (suppresses hallucinated depth motion)"
+        ),
+    )
+    parser.add_argument(
         "--per-frame-images",
         action="store_true",
         help="Also write per-frame mesh.png and overlay.png under inference/frame_XXX/",
@@ -710,6 +804,7 @@ def main() -> None:
             model.head_pose,
             device=device,
             is_loop=args.loop,
+            static_legs=args.static_legs,
         )
         print("Re-rendering mesh and overlay from stabilized poses...")
         rerender_stabilized_frames(
