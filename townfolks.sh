@@ -83,6 +83,10 @@ for row in "${CHAR_ROWS[@]}"; do
     echo
 done
 
+echo "=== Re-exporting BVH files upright (removing camera tilt) ==="
+python scripts/bvh_upright.py --output-root "$OUTPUT_ROOT" --config "$CONFIG"
+echo
+
 echo "Done. BVH files:"
 for row in "${CHAR_ROWS[@]}"; do
     IFS='|' read -r name _ _ _ _ _ _ <<<"$row"

@@ -31,7 +31,18 @@ def write_bvh(
     output_path: Path,
     exporter: BVHExporter,
     fps: float = DEFAULT_FPS,
+    world_rotation: np.ndarray | None = None,
 ) -> None:
+    """Write a BVH from pose.json frames.
+
+    world_rotation, when given, is a 3x3 rotation applied to the whole
+    animation in world space (see scripts/bvh_upright.py): SAM3D predicts pose
+    in camera space, so a rigid pre-rotation is what turns the sprite sheet's
+    tilted camera-space pose into an upright, floor-standing one. Because the
+    exporter derives each child's local rotation as R_parent^-1 @ R_child, a
+    left-multiplied rotation cancels everywhere except the root, so this
+    changes the character's world orientation without perturbing the pose.
+    """
     if not frame_poses:
         return
 
@@ -50,6 +61,11 @@ def write_bvh(
         np.array(pose["pred_joint_coords"], dtype=np.float32)[0]
         for pose in frame_poses
     ]) * METERS_TO_CENTIMETERS
+
+    if world_rotation is not None:
+        world_rotation = np.asarray(world_rotation, dtype=np.float32)
+        rots = np.einsum("ij,fkjl->fkil", world_rotation, rots)
+        root = root @ world_rotation.T
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     exporter.export(rots, root, str(output_path), frame_time=1.0 / fps)
