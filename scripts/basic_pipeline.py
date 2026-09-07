@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 from sam_3d_body.visualization.renderer import Renderer
-from scripts.export_bvh import DEFAULT_FPS, write_bvh
+from scripts.export_bvh import DEFAULT_FPS, build_exporter, write_bvh
 from scripts.foot_grounding import save_rgba_image
 from scripts.hypir_upscale import (
     DEFAULT_BASE_MODEL,
@@ -127,6 +127,7 @@ def save_pose_json(output: dict, output_path: Path) -> None:
         "pred_vertices": numpy_to_jsonable(output["pred_vertices"]),
         "pred_cam_t": numpy_to_jsonable(output["pred_cam_t"]),
         "pred_global_rots": numpy_to_jsonable(output["pred_global_rots"]),
+        "pred_joint_coords": numpy_to_jsonable(output["pred_joint_coords"]),
         "focal_length": numpy_to_jsonable(output["focal_length"]),
         "bbox": numpy_to_jsonable(output["bbox"]),
         "frame_index": output.get("frame_index"),
@@ -345,7 +346,8 @@ def main() -> None:
         raise RuntimeError("No frames produced SAM3D output; animation.bvh was not written")
 
     bvh_path = output_dir / "animation.bvh"
-    write_bvh(frame_outputs, bvh_path, fps=args.fps)
+    exporter = build_exporter(mhr_model=model.head_pose.mhr)
+    write_bvh(frame_outputs, bvh_path, exporter, fps=args.fps)
     print(f"Exported BVH: {bvh_path} ({len(frame_outputs)} frames)")
     print(f"Done. Output directory: {output_dir}")
 
