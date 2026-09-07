@@ -19,7 +19,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 from sam_3d_body.visualization.renderer import Renderer
 from scripts.export_bvh import DEFAULT_FPS, write_bvh
-from scripts.foot_grounding import render_mesh_overlay, save_rgba_image
+from scripts.foot_grounding import save_rgba_image
 from scripts.hypir_upscale import (
     DEFAULT_BASE_MODEL,
     DEFAULT_WEIGHT_PATH,
@@ -29,8 +29,11 @@ from scripts.hypir_upscale import (
 DEFAULT_CHECKPOINT = REPO_ROOT / "checkpoints/sam-3d-body-dinov3/model.ckpt"
 DEFAULT_MHR_PATH = REPO_ROOT / "checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
 DEFAULT_UPSCALE_FACTOR = 4
-NEUTRAL_BG_BGR = (128, 128, 128)
+NEUTRAL_BG_RGB = (128, 128, 128)
+MAGENTA_THRESHOLD_RGB = (200, 100, 200)
 FRAME_NAME_WIDTH = 3
+DEFAULT_MESH_OPACITY = 0.8
+UINT8_MAX = 255.0
 
 
 def numpy_to_jsonable(value):
@@ -84,19 +87,37 @@ def slice_horizontal_frames(rgba: np.ndarray, num_frames: int) -> list[np.ndarra
     return frames
 
 
-def rgba_to_bgr_on_neutral(rgba: np.ndarray) -> np.ndarray:
-    """Composite RGBA onto a neutral gray background."""
-    bgr = rgba[:, :, :3].copy()
-    alpha = rgba[:, :, 3]
-    neutral = np.full_like(bgr, NEUTRAL_BG_BGR, dtype=np.uint8)
+def rgba_to_inference_bgr(rgba: np.ndarray) -> np.ndarray:
+    """Composite RGBA onto neutral gray and replace magenta chroma-key pixels.
+
+    PIL/numpy RGBA arrays are RGB-ordered. This function composites in RGB
+    space, removes magenta, then converts to BGR for OpenCV / HYPIR / SAM3D.
+    """
+    rgb = rgba[:, :, :3].copy()
+    alpha = rgba[:, :, 3] if rgba.shape[2] == 4 else np.full(rgba.shape[:2], 255, dtype=np.uint8)
+    neutral_rgb = np.full_like(rgb, NEUTRAL_BG_RGB, dtype=np.uint8)
     alpha_f = (alpha.astype(np.float32) / 255.0)[:, :, None]
-    blended = bgr.astype(np.float32) * alpha_f + neutral.astype(np.float32) * (1.0 - alpha_f)
-    return blended.astype(np.uint8)
+    rgb = (rgb.astype(np.float32) * alpha_f + neutral_rgb.astype(np.float32) * (1.0 - alpha_f))
+    rgb = rgb.astype(np.uint8)
+
+    magenta_mask = (
+        (rgb[:, :, 0] > MAGENTA_THRESHOLD_RGB[0])
+        & (rgb[:, :, 1] < MAGENTA_THRESHOLD_RGB[1])
+        & (rgb[:, :, 2] > MAGENTA_THRESHOLD_RGB[2])
+    )
+    rgb[magenta_mask] = NEUTRAL_BG_RGB
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def save_display_image(image_bgr: np.ndarray, output_path: Path) -> None:
+    """Save a BGR image as an RGB PNG for correct colors in standard viewers."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    Image.fromarray(rgb).save(output_path)
 
 
 def save_bgr_image(image_bgr: np.ndarray, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(output_path), image_bgr)
+    save_display_image(image_bgr, output_path)
 
 
 def save_pose_json(output: dict, output_path: Path) -> None:
@@ -132,6 +153,25 @@ def render_mesh_transparent(
     return rgba
 
 
+def composite_mesh_overlay(
+    mesh_rgba: np.ndarray,
+    image_bgr: np.ndarray,
+    opacity: float,
+) -> np.ndarray:
+    """Blend a mesh render over the source image at the given opacity.
+
+    Renderer.__call__ returns colors in the same channel order as the image it
+    was handed (BGR here), so this composites in BGR space. Unlike
+    render_mesh_overlay, the mesh alpha is scaled by `opacity` so the sprite
+    stays visible underneath.
+    """
+    mesh_color = mesh_rgba[:, :, :3].astype(np.float32)
+    mesh_alpha = (mesh_rgba[:, :, 3].astype(np.float32) * opacity)[:, :, None]
+    background = image_bgr.astype(np.float32) / UINT8_MAX
+    blended = mesh_color * mesh_alpha + background * (1.0 - mesh_alpha)
+    return np.clip(blended * UINT8_MAX, 0, UINT8_MAX).astype(np.uint8)
+
+
 def frame_name(frame_index: int) -> str:
     return f"frame_{frame_index:0{FRAME_NAME_WIDTH}d}"
 
@@ -161,8 +201,9 @@ def process_frame(
     use_upscale: bool,
     upscale_factor: int,
     hypir_upscaler: HypirUpscaler | None,
+    mesh_opacity: float,
 ) -> dict | None:
-    frame_bgr = rgba_to_bgr_on_neutral(frame_rgba)
+    frame_bgr = rgba_to_inference_bgr(frame_rgba)
     frame_stem = frame_name(frame_index)
 
     frames_dir = output_dir / "frames"
@@ -192,7 +233,7 @@ def process_frame(
     mesh_rgba = render_mesh_transparent(renderer, vertices, cam_t, upscaled_bgr)
     save_rgba_image(mesh_rgba, str(inference_dir / "mesh.png"))
 
-    overlay_bgr = render_mesh_overlay(renderer, vertices, cam_t, upscaled_bgr)
+    overlay_bgr = composite_mesh_overlay(mesh_rgba, upscaled_bgr, mesh_opacity)
     save_bgr_image(overlay_bgr, inference_dir / "overlay.png")
 
     save_pose_json(output, inference_dir / "pose.json")
@@ -215,13 +256,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--upscale",
         action="store_true",
-        help="Upscale each frame with HYPIR before inference",
+        help="Upscale each frame with HYPIR before inference (without this flag, "
+        "upscaled/ is a passthrough copy of frames/)",
     )
     parser.add_argument(
         "--upscale-factor",
         type=int,
         default=DEFAULT_UPSCALE_FACTOR,
         help="HYPIR upscale factor when --upscale is set",
+    )
+    parser.add_argument(
+        "--mesh-opacity",
+        type=float,
+        default=DEFAULT_MESH_OPACITY,
+        help="Mesh opacity in overlay.png, 0.0 (invisible) to 1.0 (opaque)",
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--mhr-path", default=str(DEFAULT_MHR_PATH))
@@ -249,7 +297,10 @@ def main() -> None:
 
     rgba = load_and_crop_rgba(image_path, rect)
     frame_rgbs = slice_horizontal_frames(rgba, args.frames)
-    print(f"Sliced {len(frame_rgbs)} frames from {image_path}")
+    frame_height, frame_width = frame_rgbs[0].shape[:2]
+    print(
+        f"Sliced {len(frame_rgbs)} frames of {frame_width}x{frame_height} from {image_path}"
+    )
 
     hypir_upscaler = None
     if args.upscale:
@@ -285,6 +336,7 @@ def main() -> None:
             use_upscale=args.upscale,
             upscale_factor=args.upscale_factor,
             hypir_upscaler=hypir_upscaler,
+            mesh_opacity=args.mesh_opacity,
         )
         if output is not None:
             frame_outputs.append(output)
