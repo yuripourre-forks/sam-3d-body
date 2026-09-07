@@ -75,19 +75,31 @@ for row in "${CHAR_ROWS[@]}"; do
     echo "=== ${name}: ${frame_count} frames, rect=${rect}, loop=${is_loop} ==="
     # No townsfolk sprite articulates its legs -- only the upper body is
     # animated -- so leg motion SAM3D reports is depth ambiguity, not movement.
+    # --straighten-neck removes the MHR rig's baked-in forward neck/head bend
+    # (present in every reconstruction, not specific to this sheet) and was
+    # verified to leave the render/overlay height unchanged (holding pose
+    # params fixed, top-of-head moves <1% of frame height).
+    #
+    # --clamp-joint-limits is intentionally NOT enabled here: measured on
+    # char_00, ~30 of the 130 body-pose limit constraints are exact
+    # "should-be-zero" corrective/coupling terms that the network legitimately
+    # uses nonzero to express these stylized, non-anatomical isometric poses --
+    # clamping them snapped out a real forward lean and made the rendered mesh
+    # ~8% taller (20px of 251px), breaking overlay alignment with the sprite.
     python scripts/basic_pipeline.py \
         --image "$INPUT" \
         --rect "$rect" \
         --frames "$frame_count" \
         --output "$output_dir" \
         --static-legs \
+        --straighten-neck \
         "${loop_flag[@]}" \
         "${EXTRA_ARGS[@]}"
     echo
 done
 
 echo "=== Re-exporting BVH files upright (removing camera tilt) ==="
-python scripts/bvh_upright.py --output-root "$OUTPUT_ROOT" --config "$CONFIG"
+python scripts/bvh_upright.py --output-root "$OUTPUT_ROOT" --config "$CONFIG" --straighten-neck
 echo
 
 echo "Done. BVH files:"

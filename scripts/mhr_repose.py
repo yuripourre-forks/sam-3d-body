@@ -43,6 +43,14 @@ DEFAULT_MHR_PATH = REPO_ROOT / "checkpoints/sam-3d-body-dinov3/assets/mhr_model.
 CAMERA_AXIS_FLIP = [1, 2]
 NUM_OUTPUT_KEYPOINTS = 70
 
+# c_neck's joint_prerotations decodes to +19.04 degrees about Z, c_head's to
+# -16.75 degrees -- a fixed bind-pose bend baked into the MHR rig itself
+# (identical for every character/pose; c_spine3's prerotation is zero).
+# straighten_neck_head() zeroes just these two so the neck/head render and
+# export straight, without touching any other joint.
+NECK_HEAD_JOINT_NAMES = ("c_neck", "c_head")
+IDENTITY_QUATERNION = (0.0, 0.0, 0.0, 1.0)
+
 
 def load_head_pose(
     checkpoint_path: str = str(DEFAULT_CHECKPOINT),
@@ -64,6 +72,26 @@ def load_head_pose(
 
 def _to_batch(array: np.ndarray, device: str) -> torch.Tensor:
     return torch.as_tensor(np.asarray(array, dtype=np.float32), device=device).unsqueeze(0)
+
+
+def straighten_neck_head(head_pose) -> None:
+    """Zero the MHR rig's baked-in neck/head prerotation, in place.
+
+    joint_prerotations is a fixed per-joint bind-pose rotation applied before
+    any animated pose; it is *not* something body_pose_params can express
+    (verified: zeroing every body-pose parameter exclusive to c_neck/c_head
+    leaves this Z-tilt exactly at its rest value). Patching it here, once,
+    right after loading, affects the neck/head bend in both the rendered mesh
+    and the exported BVH consistently, while leaving every other joint's
+    prerotation -- and the model's animated per-frame rotations -- untouched.
+    """
+    skeleton = head_pose.mhr.character_torch.skeleton
+    joint_names = list(skeleton.joint_names)
+    identity = torch.tensor(IDENTITY_QUATERNION, dtype=skeleton.joint_prerotations.dtype)
+    corrected = skeleton.joint_prerotations.detach().clone()
+    for name in NECK_HEAD_JOINT_NAMES:
+        corrected[joint_names.index(name)] = identity
+    skeleton.joint_prerotations.copy_(corrected)
 
 
 def repose(

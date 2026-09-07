@@ -40,7 +40,7 @@ from scripts.basic_pipeline import (  # noqa: E402
 )
 from scripts.export_bvh import DEFAULT_FPS, build_exporter, write_bvh  # noqa: E402
 from scripts.mhr_repose import load_head_pose  # noqa: E402
-from scripts.mhr_repose import CAMERA_AXIS_FLIP  # noqa: E402
+from scripts.mhr_repose import CAMERA_AXIS_FLIP, straighten_neck_head  # noqa: E402
 from scripts.pose_priors import robust_shared_up, shortest_arc_rotation  # noqa: E402
 
 DEFAULT_OUTPUT_ROOT = "output/townsfolk"
@@ -109,6 +109,15 @@ def main() -> None:
     parser.add_argument("--mhr-path", default=str(DEFAULT_MHR_PATH))
     parser.add_argument("--device", default=None)
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
+    parser.add_argument(
+        "--straighten-neck",
+        action="store_true",
+        help=(
+            "Zero the MHR rig's baked-in neck/head prerotation, matching "
+            "basic_pipeline.py's --straighten-neck so BVH rest-offset bone "
+            "directions stay consistent with the animated rotation channels"
+        ),
+    )
     args = parser.parse_args()
 
     import torch
@@ -123,6 +132,8 @@ def main() -> None:
         mhr_path=str(resolve_path(args.mhr_path)),
         device=device,
     )
+    if args.straighten_neck:
+        straighten_neck_head(head_pose)
     joint_names = build_exporter(mhr_model=head_pose.mhr).model_joint_names
 
     characters = []

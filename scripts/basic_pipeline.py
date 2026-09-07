@@ -38,7 +38,7 @@ from scripts.hypir_upscale import (
     DEFAULT_WEIGHT_PATH,
     HypirUpscaler,
 )
-from scripts.mhr_repose import CAMERA_AXIS_FLIP, repose
+from scripts.mhr_repose import CAMERA_AXIS_FLIP, repose, straighten_neck_head
 from scripts.pose_priors import euler_zyx_to_rotmat, weighted_median_per_dim
 from scripts.sprite_grid import content_mask, tight_content_bbox
 from scripts.temporal_smooth_poses import (
@@ -57,6 +57,8 @@ NEUTRAL_BG_RGB = (128, 128, 128)
 MAGENTA_THRESHOLD_RGB = (200, 100, 200)
 FRAME_NAME_WIDTH = 3
 DEFAULT_MESH_OPACITY = 0.8
+DEFAULT_FOCAL_LENGTH_SCALE = 1.0
+DEFAULT_INFERENCE_TYPE = "body"
 UINT8_MAX = 255.0
 MASK_FOREGROUND_VALUE = 255
 EXPR_PARAM_DIM = 72
@@ -244,12 +246,32 @@ def frame_name(frame_index: int) -> str:
     return f"frame_{frame_index:0{FRAME_NAME_WIDTH}d}"
 
 
+def build_scaled_cam_int(height: int, width: int, focal_length_scale: float) -> torch.Tensor:
+    """Build an explicit camera-intrinsics tensor for isometric sprite art.
+
+    SAM3D-Body's default (no cam_int given) assumes a generic perspective
+    photo: focal = sqrt(H^2+W^2) (see prepare_batch.py). Isometric sprites have
+    no perspective foreshortening, so scaling that default focal length up
+    (narrower field of view, closer to orthographic) is a tunable calibration
+    knob for depth-axis noise -- see basic_pipeline.py's docstring example and
+    the --focal-length-scale flag.
+    """
+    default_focal = (float(height) ** 2 + float(width) ** 2) ** 0.5
+    focal = focal_length_scale * default_focal
+    return torch.tensor(
+        [[[focal, 0.0, width / 2.0], [0.0, focal, height / 2.0], [0.0, 0.0, 1.0]]],
+        dtype=torch.float32,
+    )
+
+
 def run_inference_on_frame(
     estimator: SAM3DBodyEstimator,
     upscaled_bgr: np.ndarray,
     frame_rgba: np.ndarray,
     use_tight_bbox: bool,
     use_mask: bool,
+    focal_length_scale: float = 1.0,
+    inference_type: str = "body",
 ) -> dict | None:
     height, width = upscaled_bgr.shape[:2]
     upscaled_rgb = cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
@@ -265,11 +287,16 @@ def run_inference_on_frame(
 
     masks = build_inference_mask(frame_rgba, (height, width)) if use_mask else None
 
+    cam_int = None
+    if focal_length_scale != DEFAULT_FOCAL_LENGTH_SCALE:
+        cam_int = build_scaled_cam_int(height, width, focal_length_scale)
+
     outputs = estimator.process_one_image(
         upscaled_rgb,
         bboxes=bbox,
         masks=masks,
-        inference_type="body",
+        cam_int=cam_int,
+        inference_type=inference_type,
     )
     if not outputs:
         return None
@@ -406,6 +433,43 @@ def freeze_leg_params(frames: list[dict], head_pose) -> None:
     print(f"  froze {len(leg_indices)} leg pose parameter(s) to the per-character median")
 
 
+def clamp_body_pose_to_limits(frames: list[dict], head_pose) -> int:
+    """Clip body_pose_params in place to MHR's built-in anatomical joint limits.
+
+    character_torch.parameter_limits.minmax_* holds 198 biomechanical min/max
+    constraints (e.g. clavicle rotation range, an arm-twist coupling term that
+    should stay at zero), each tied to one raw model-parameter index via
+    minmax_parameter_index. Only the subset landing in the body_pose_params
+    range [BODY_PARAM_OFFSET, BODY_PARAM_OFFSET + BODY_PARAM_COUNT) is
+    addressable here; np.clip only ever moves an out-of-range value toward its
+    nearest bound, so already-valid values are left untouched.
+
+    Returns the number of individual (frame, parameter) values that were
+    clamped, for logging.
+    """
+    parameter_limits = head_pose.mhr.character_torch.parameter_limits
+    param_index = parameter_limits.minmax_parameter_index.cpu().numpy()
+    param_min = parameter_limits.minmax_min.cpu().numpy()
+    param_max = parameter_limits.minmax_max.cpu().numpy()
+
+    in_body_range = (param_index >= BODY_PARAM_OFFSET) & (
+        param_index < BODY_PARAM_OFFSET + BODY_PARAM_COUNT
+    )
+    body_indices = param_index[in_body_range] - BODY_PARAM_OFFSET
+    body_min = param_min[in_body_range]
+    body_max = param_max[in_body_range]
+
+    body_params = np.array(
+        [frame["body_pose_params"] for frame in frames], dtype=np.float32
+    )
+    clamped = np.clip(body_params[:, body_indices], body_min, body_max)
+    num_clamped = int(np.count_nonzero(clamped != body_params[:, body_indices]))
+    body_params[:, body_indices] = clamped
+    for frame, params in zip(frames, body_params):
+        frame["body_pose_params"] = params.tolist()
+    return num_clamped
+
+
 def repair_camera_params(
     frames: list[dict], outlier_indices: set[int], is_loop: bool
 ) -> None:
@@ -444,6 +508,7 @@ def stabilize_sequence(
     device: str,
     is_loop: bool,
     static_legs: bool,
+    clamp_joint_limits: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Lock identity, repair outliers, smooth, and re-pose every frame."""
     shape_locked, scale_locked, _ = lock_sequence_identity(frames)
@@ -468,6 +533,10 @@ def stabilize_sequence(
 
     if static_legs:
         freeze_leg_params(frames, head_pose)
+
+    if clamp_joint_limits:
+        num_clamped = clamp_body_pose_to_limits(frames, head_pose)
+        print(f"  clamped {num_clamped} out-of-range body pose value(s) to anatomical limits")
 
     zero_expr = np.zeros(EXPR_PARAM_DIM, dtype=np.float32)
     for frame in frames:
@@ -569,6 +638,8 @@ def process_frame(
     defer_render: bool,
     mesh_opacity: float,
     save_per_frame_images: bool,
+    focal_length_scale: float = DEFAULT_FOCAL_LENGTH_SCALE,
+    inference_type: str = DEFAULT_INFERENCE_TYPE,
 ) -> dict | None:
     frame_bgr = rgba_to_inference_bgr(frame_rgba)
     frame_stem = frame_name(frame_index)
@@ -591,6 +662,8 @@ def process_frame(
         frame_rgba,
         use_tight_bbox=use_tight_bbox,
         use_mask=use_mask,
+        focal_length_scale=focal_length_scale,
+        inference_type=inference_type,
     )
     if output is None:
         print(f"WARNING: no SAM3D output for {frame_stem}")
@@ -714,6 +787,45 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--clamp-joint-limits",
+        action="store_true",
+        help=(
+            "Clip body_pose_params to MHR's built-in anatomical joint-limit "
+            "constraints (parameter_limits) after leg freezing; strictly "
+            "non-regressive for values already inside their limits"
+        ),
+    )
+    parser.add_argument(
+        "--straighten-neck",
+        action="store_true",
+        help=(
+            "Zero the MHR rig's baked-in neck/head prerotation (a fixed forward "
+            "bend present in every reconstruction, not a per-frame estimate)"
+        ),
+    )
+    parser.add_argument(
+        "--focal-length-scale",
+        type=float,
+        default=DEFAULT_FOCAL_LENGTH_SCALE,
+        help=(
+            "Scale factor applied to the default focal length (sqrt(H^2+W^2)) "
+            "passed as cam_int to SAM3D. Isometric sprite art has no "
+            "perspective foreshortening, so values above 1.0 (narrower FOV, "
+            "closer to orthographic; try 4-8x) can reduce depth-axis noise. "
+            "Default 1.0 leaves SAM3D's built-in generic-perspective assumption."
+        ),
+    )
+    parser.add_argument(
+        "--inference-type",
+        choices=["body", "full"],
+        default=DEFAULT_INFERENCE_TYPE,
+        help=(
+            "SAM3D inference mode: 'body' (default) is body-decoder only; "
+            "'full' additionally runs wrist/hand IK refinement, at extra cost "
+            "per frame"
+        ),
+    )
+    parser.add_argument(
         "--per-frame-images",
         action="store_true",
         help="Also write per-frame mesh.png and overlay.png under inference/frame_XXX/",
@@ -766,6 +878,8 @@ def main() -> None:
         mhr_path=args.mhr_path,
         device=device,
     )
+    if args.straighten_neck:
+        straighten_neck_head(model.head_pose)
     estimator = SAM3DBodyEstimator(
         sam_3d_body_model=model,
         model_cfg=model_cfg,
@@ -788,6 +902,8 @@ def main() -> None:
             defer_render=stabilize,
             mesh_opacity=args.mesh_opacity,
             save_per_frame_images=args.per_frame_images,
+            focal_length_scale=args.focal_length_scale,
+            inference_type=args.inference_type,
         )
         if output is not None:
             frame_outputs.append(output)
@@ -805,6 +921,7 @@ def main() -> None:
             device=device,
             is_loop=args.loop,
             static_legs=args.static_legs,
+            clamp_joint_limits=args.clamp_joint_limits,
         )
         print("Re-rendering mesh and overlay from stabilized poses...")
         rerender_stabilized_frames(
