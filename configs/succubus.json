@@ -1,0 +1,78 @@
+{
+  "input": "input/succubus.png",
+  "output_root": "output/succubus",
+  "split_dir": "output/succubus/split",
+  "layout": "multi_angle_blocks",
+  "output_frame_size": 96,
+  "white_threshold": 240,
+  "white_fraction_threshold": 0.98,
+  "num_view_angles": 8,
+  "view_yaw_step_deg": 45.0,
+  "view_yaw_start_deg": 0.0,
+  "grid_cell_size": 128,
+  "candidate_upscalers": ["hypir4x"],
+  "large_sheet_frame_threshold": 200,
+  "boundary_lambda": 0.002,
+  "upscale": 4,
+  "render_scale": 4,
+  "device": "cuda",
+  "characters": [
+    {
+      "id": 0,
+      "name": "succubus",
+      "sequences": [
+        { "name": "death", "loop": false, "standing": false },
+        { "name": "idle", "loop": true, "standing": true },
+        { "name": "attack", "loop": false, "standing": true },
+        { "name": "walk", "loop": true, "standing": true },
+        { "name": "attack2", "loop": false, "standing": true }
+      ]
+    }
+  ],
+  "blocks": [
+    { "sequence": "death", "y0": 7, "y1": 134, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 136, "y1": 263, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 265, "y1": 392, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 394, "y1": 521, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 523, "y1": 650, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 652, "y1": 779, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 781, "y1": 908, "x0": 0, "x1": 3071, "cell_size": 128 },
+    { "sequence": "death", "y0": 910, "y1": 1037, "x0": 0, "x1": 3071, "cell_size": 128 },
+
+    { "sequence": "idle", "y0": 1045, "y1": 1172, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1174, "y1": 1301, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1303, "y1": 1430, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1432, "y1": 1559, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1561, "y1": 1688, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1690, "y1": 1817, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1819, "y1": 1946, "x0": 0, "x1": 2047, "cell_size": 128 },
+    { "sequence": "idle", "y0": 1948, "y1": 2075, "x0": 0, "x1": 2047, "cell_size": 128 },
+
+    { "sequence": "attack", "y0": 1045, "y1": 1172, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1174, "y1": 1301, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1303, "y1": 1430, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1432, "y1": 1559, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1561, "y1": 1688, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1690, "y1": 1817, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1819, "y1": 1946, "x0": 2049, "x1": 2944, "cell_size": 128 },
+    { "sequence": "attack", "y0": 1948, "y1": 2075, "x0": 2049, "x1": 2944, "cell_size": 128 },
+
+    { "sequence": "walk", "y0": 2083, "y1": 2210, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2212, "y1": 2339, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2341, "y1": 2468, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2470, "y1": 2597, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2599, "y1": 2726, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2728, "y1": 2855, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2857, "y1": 2984, "x0": 0, "x1": 1791, "cell_size": 128 },
+    { "sequence": "walk", "y0": 2986, "y1": 3113, "x0": 0, "x1": 1791, "cell_size": 128 },
+
+    { "sequence": "attack2", "y0": 2083, "y1": 2210, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2212, "y1": 2339, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2341, "y1": 2468, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2470, "y1": 2597, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2599, "y1": 2726, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2728, "y1": 2855, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2857, "y1": 2984, "x0": 1793, "x1": 2816, "cell_size": 128 },
+    { "sequence": "attack2", "y0": 2986, "y1": 3113, "x0": 1793, "x1": 2816, "cell_size": 128 }
+  ]
+}

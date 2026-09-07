@@ -1,0 +1,30 @@
+{
+  "input": "input/townsfolk.png",
+  "output_root": "output/townsfolk",
+  "split_dir": "output/split",
+  "layout": "row_per_character",
+  "output_frame_size": 96,
+  "white_threshold": 240,
+  "white_fraction_threshold": 0.98,
+  "num_view_angles": 1,
+  "view_yaw_step_deg": 45.0,
+  "view_yaw_start_deg": 0.0,
+  "num_characters": 9,
+  "candidate_upscalers": ["hypir8x"],
+  "large_sheet_frame_threshold": 200,
+  "boundary_lambda": 0.002,
+  "upscale": 4,
+  "render_scale": 4,
+  "device": "cuda",
+  "characters": [
+    { "id": 0, "name": "char_00", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 1, "name": "char_01", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 2, "name": "char_02", "sequences": [{ "name": "sit", "loop": true, "standing": false }] },
+    { "id": 3, "name": "char_03", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 4, "name": "char_04", "sequences": [{ "name": "death", "loop": false, "standing": false }] },
+    { "id": 5, "name": "char_05", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 6, "name": "char_06", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 7, "name": "char_07", "sequences": [{ "name": "walk", "loop": true, "standing": true }] },
+    { "id": 8, "name": "char_08", "sequences": [{ "name": "walk", "loop": true, "standing": true }] }
+  ]
+}

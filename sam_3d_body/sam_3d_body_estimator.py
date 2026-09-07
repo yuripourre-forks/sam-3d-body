@@ -15,7 +15,7 @@ from sam_3d_body.data.transforms import (
 
 from sam_3d_body.data.utils.io import load_image
 from sam_3d_body.data.utils.prepare_batch import prepare_batch
-from sam_3d_body.utils import recursive_to
+from sam_3d_body.utils import empty_cache, recursive_to
 from torchvision.transforms import ToTensor
 
 
@@ -94,7 +94,7 @@ class SAM3DBodyEstimator:
         self.image_embeddings = None
         self.output = None
         self.prev_prompt = []
-        torch.cuda.empty_cache()
+        empty_cache(self.device)
 
         if type(img) == str:
             img = load_image(img, backend="cv2", image_format="bgr")
@@ -157,7 +157,7 @@ class SAM3DBodyEstimator:
         batch = prepare_batch(img, self.transform, boxes, masks, masks_score)
 
         #################### Run model inference on an image ####################
-        batch = recursive_to(batch, "cuda")
+        batch = recursive_to(batch, self.device)
         self.model._initialize_batch(batch)
 
         # Handle camera intrinsics

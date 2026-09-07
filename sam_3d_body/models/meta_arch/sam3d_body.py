@@ -1026,12 +1026,17 @@ class SAM3DBody(BaseModel):
 
     def get_ray_condition(self, batch):
         B, N, _, H, W = batch["img"].shape
+        device = batch["img"].device
         meshgrid_xy = (
             torch.stack(
-                torch.meshgrid(torch.arange(H), torch.arange(W), indexing="xy"), dim=2
+                torch.meshgrid(
+                    torch.arange(H, device=device),
+                    torch.arange(W, device=device),
+                    indexing="xy",
+                ),
+                dim=2,
             )[None, None, :, :, :]
             .repeat(B, N, 1, 1, 1)
-            .cuda()
         )  # B x N x H x W x 2
         meshgrid_xy = (
             meshgrid_xy / batch["affine_trans"][:, :, None, None, [0, 1], [0, 1]]
@@ -1243,7 +1248,7 @@ class SAM3DBody(BaseModel):
         batch_lhand = prepare_batch(
             flipped_img, transform_hand, left_xyxy, cam_int=cam_int.clone()
         )
-        batch_lhand = recursive_to(batch_lhand, "cuda")
+        batch_lhand = recursive_to(batch_lhand, batch["img"].device)
         lhand_output = self.forward_step(batch_lhand, decoder_type="hand")
 
         # Unflip output
@@ -1279,17 +1284,18 @@ class SAM3DBody(BaseModel):
         batch_rhand = prepare_batch(
             img, transform_hand, right_xyxy, cam_int=cam_int.clone()
         )
-        batch_rhand = recursive_to(batch_rhand, "cuda")
+        batch_rhand = recursive_to(batch_rhand, batch["img"].device)
         rhand_output = self.forward_step(batch_rhand, decoder_type="hand")
 
         # Step 3. replace hand pose estimation from the body decoder.
         ## CRITERIA 1: LOCAL WRIST POSE DIFFERENCE
         joint_rotations = pose_output["mhr"]["joint_global_rots"]
         ### Get lowarm
-        lowarm_joint_idxs = torch.LongTensor([76, 40]).cuda()  # left, right
+        device = joint_rotations.device
+        lowarm_joint_idxs = torch.tensor([76, 40], device=device)  # left, right
         lowarm_joint_rotations = joint_rotations[:, lowarm_joint_idxs]  # B x 2 x 3 x 3
         ### Get zero-wrist pose
-        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).cuda()  # left, right
+        wrist_twist_joint_idxs = torch.tensor([77, 41], device=device)  # left, right
         wrist_zero_rot_pose = (
             lowarm_joint_rotations
             @ self.head_pose.joint_rotation[wrist_twist_joint_idxs]
@@ -1505,11 +1511,12 @@ class SAM3DBody(BaseModel):
         )[1]
 
         # Get lowarm
-        lowarm_joint_idxs = torch.LongTensor([76, 40]).cuda()  # left, right
+        device = joint_rotations.device
+        lowarm_joint_idxs = torch.tensor([76, 40], device=device)  # left, right
         lowarm_joint_rotations = joint_rotations[:, lowarm_joint_idxs]  # B x 2 x 3 x 3
 
         # Get zero-wrist pose
-        wrist_twist_joint_idxs = torch.LongTensor([77, 41]).cuda()  # left, right
+        wrist_twist_joint_idxs = torch.tensor([77, 41], device=device)  # left, right
         wrist_zero_rot_pose = (
             lowarm_joint_rotations
             @ self.head_pose.joint_rotation[wrist_twist_joint_idxs]
