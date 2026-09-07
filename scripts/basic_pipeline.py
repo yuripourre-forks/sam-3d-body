@@ -32,7 +32,7 @@ from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 from sam_3d_body.exporters.bvh_exporter import BVHExporter
 from sam_3d_body.visualization.renderer import Renderer
 from scripts.export_bvh import DEFAULT_FPS, METERS_TO_CENTIMETERS, build_exporter, write_bvh
-from scripts.foot_grounding import save_rgba_image
+from scripts.foot_grounding import assemble_sprite_sheet, save_rgba_image
 from scripts.hypir_upscale import (
     DEFAULT_BASE_MODEL,
     DEFAULT_WEIGHT_PATH,
@@ -268,7 +268,8 @@ def render_frame_outputs(
     estimator: SAM3DBodyEstimator,
     inference_dir: Path,
     mesh_opacity: float,
-) -> None:
+    save_per_frame: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
     # pred_cam_t/focal_length may have been LERP'd into plain lists/floats by
     # repair_camera_params(), so coerce back to arrays for the renderer.
     renderer = Renderer(focal_length=float(output["focal_length"]), faces=estimator.faces)
@@ -278,9 +279,30 @@ def render_frame_outputs(
         np.asarray(output["pred_cam_t"], dtype=np.float32),
         upscaled_bgr,
     )
-    save_rgba_image(mesh_rgba, str(inference_dir / "mesh.png"))
     overlay_bgr = composite_mesh_overlay(mesh_rgba, upscaled_bgr, mesh_opacity)
-    save_bgr_image(overlay_bgr, inference_dir / "overlay.png")
+    if save_per_frame:
+        save_rgba_image(mesh_rgba, str(inference_dir / "mesh.png"))
+        save_bgr_image(overlay_bgr, inference_dir / "overlay.png")
+    return mesh_rgba, overlay_bgr
+
+
+def store_frame_render(frame: dict, mesh_rgba: np.ndarray, overlay_bgr: np.ndarray) -> None:
+    frame["_mesh_rgba"] = mesh_rgba
+    frame["_overlay_bgr"] = overlay_bgr
+
+
+def assemble_output_sheets(frames: list[dict], output_dir: Path) -> None:
+    """Concatenate per-frame mesh and overlay renders into horizontal sprite sheets."""
+    ordered = sorted(frames, key=lambda frame: frame["frame_index"])
+    mesh_frames = [frame["_mesh_rgba"] for frame in ordered]
+    overlay_frames = [
+        cv2.cvtColor(frame["_overlay_bgr"], cv2.COLOR_BGR2RGB) for frame in ordered
+    ]
+    mesh_path = output_dir / "mesh.png"
+    overlay_path = output_dir / "overlay.png"
+    assemble_sprite_sheet(mesh_frames, str(mesh_path))
+    assemble_sprite_sheet(overlay_frames, str(overlay_path))
+    print(f"Wrote sprite sheets: {mesh_path}, {overlay_path}")
 
 
 def lock_sequence_identity(frames: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -460,6 +482,7 @@ def process_frame(
     use_mask: bool,
     defer_render: bool,
     mesh_opacity: float,
+    save_per_frame_images: bool,
 ) -> dict | None:
     frame_bgr = rgba_to_inference_bgr(frame_rgba)
     frame_stem = frame_name(frame_index)
@@ -491,7 +514,15 @@ def process_frame(
     inference_dir.mkdir(parents=True, exist_ok=True)
 
     if not defer_render:
-        render_frame_outputs(output, upscaled_bgr, estimator, inference_dir, mesh_opacity)
+        mesh_rgba, overlay_bgr = render_frame_outputs(
+            output,
+            upscaled_bgr,
+            estimator,
+            inference_dir,
+            mesh_opacity,
+            save_per_frame=save_per_frame_images,
+        )
+        store_frame_render(output, mesh_rgba, overlay_bgr)
 
     save_pose_json(output, inference_dir / "pose.json")
     output["_upscaled_bgr"] = upscaled_bgr
@@ -504,11 +535,20 @@ def rerender_stabilized_frames(
     frames: list[dict],
     estimator: SAM3DBodyEstimator,
     mesh_opacity: float,
+    save_per_frame_images: bool,
 ) -> None:
     for frame in frames:
         inference_dir = frame["_inference_dir"]
         upscaled_bgr = frame["_upscaled_bgr"]
-        render_frame_outputs(frame, upscaled_bgr, estimator, inference_dir, mesh_opacity)
+        mesh_rgba, overlay_bgr = render_frame_outputs(
+            frame,
+            upscaled_bgr,
+            estimator,
+            inference_dir,
+            mesh_opacity,
+            save_per_frame=save_per_frame_images,
+        )
+        store_frame_render(frame, mesh_rgba, overlay_bgr)
         save_pose_json(frame, inference_dir / "pose.json")
 
 
@@ -516,6 +556,8 @@ def strip_internal_fields(frames: list[dict]) -> None:
     for frame in frames:
         frame.pop("_upscaled_bgr", None)
         frame.pop("_inference_dir", None)
+        frame.pop("_mesh_rgba", None)
+        frame.pop("_overlay_bgr", None)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -576,6 +618,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-stabilize",
         action="store_true",
         help="Skip identity locking and temporal smoothing",
+    )
+    parser.add_argument(
+        "--per-frame-images",
+        action="store_true",
+        help="Also write per-frame mesh.png and overlay.png under inference/frame_XXX/",
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--mhr-path", default=str(DEFAULT_MHR_PATH))
@@ -646,6 +693,7 @@ def main() -> None:
             use_mask=args.use_mask,
             defer_render=stabilize,
             mesh_opacity=args.mesh_opacity,
+            save_per_frame_images=args.per_frame_images,
         )
         if output is not None:
             frame_outputs.append(output)
@@ -664,7 +712,14 @@ def main() -> None:
             is_loop=args.loop,
         )
         print("Re-rendering mesh and overlay from stabilized poses...")
-        rerender_stabilized_frames(frame_outputs, estimator, args.mesh_opacity)
+        rerender_stabilized_frames(
+            frame_outputs,
+            estimator,
+            args.mesh_opacity,
+            save_per_frame_images=args.per_frame_images,
+        )
+
+    assemble_output_sheets(frame_outputs, output_dir)
 
     bvh_path = output_dir / "animation.bvh"
     exporter = build_exporter(mhr_model=model.head_pose.mhr)
